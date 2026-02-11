@@ -1,3 +1,13 @@
+pushprofile()
+{
+   cd ~/mylib
+   git add .
+   git commit -m "add more funtions"
+   git push
+}
+
+
+
 wpath() {
     local path="$1"
     local format="default"
