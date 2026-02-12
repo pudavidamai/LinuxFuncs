@@ -274,3 +274,136 @@ listpath() {
         echo "  Total: $count shortcuts"
     fi
 }
+
+#!/bin/bash
+
+# ===========================================
+# fixwin - 查找并转换Windows格式文件为Unix格式
+# 用法: fixwin [排除路径...]
+# 功能: 
+#   - 自动排除隐藏文件和目录（.*）
+#   - 转换行尾 CRLF -> LF
+#   - 转换编码 GBK/GB2312/GB18030 -> UTF-8
+#   - 支持多个排除路径
+# 示例:
+#   fixwin
+#   fixwin venv .git node_modules
+#   fixwin ./venv/* dist
+# ===========================================
+fixwin() {
+    local exclude_paths=("$@")
+    local exclude_conditions=""
+    local find_cmd=""
+    local converted_count=0
+    local skipped_count=0
+    local failed_count=0
+    
+    echo "🔍 正在扫描Windows格式文件（CRLF结尾）..."
+    echo "🚫 默认排除隐藏文件/目录（.*）"
+    
+    # 1. 默认排除所有隐藏文件和目录
+    exclude_conditions="$exclude_conditions -not -path \"*/.*\" -not -path \".*/\""
+    
+    # 2. 添加用户指定的排除路径
+    if [ ${#exclude_paths[@]} -gt 0 ]; then
+        echo "📁 用户排除: ${exclude_paths[*]}"
+        for path in "${exclude_paths[@]}"; do
+            clean_path=$(echo "$path" | sed -E 's|^\./||; s|/*$||')
+            [ -z "$clean_path" ] && continue
+            exclude_conditions="$exclude_conditions \
+                -not -path \"./$clean_path\" \
+                -not -path \"./$clean_path/*\" \
+                -not -path \"*/$clean_path\" \
+                -not -path \"*/$clean_path/*\""
+        done
+    fi
+    
+    echo "=========================================="
+    
+    # 3. 构建find命令
+    find_cmd="find . -type f $exclude_conditions -exec grep -I -l $'\r$' {} \; 2>/dev/null"
+    
+    # 4. 处理每个文件
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        
+        echo "📄 处理: $file"
+        
+        # 获取文件信息
+        local file_info=$(file "$file")
+        local needs_conversion=false
+        local changes=()
+        
+        # 检查行尾
+        if grep -q $'\r$' "$file"; then
+            needs_conversion=true
+            changes+=("行尾: CRLF → LF")
+        fi
+        
+        # 检查编码
+        local encoding=""
+        if echo "$file_info" | grep -q "ISO-8859\|Non-ISO\|GB2312\|GBK\|GB18030"; then
+            encoding="gbk"
+            needs_conversion=true
+            changes+=("编码: → UTF-8")
+        elif ! echo "$file_info" | grep -q "UTF-8"; then
+            # 进一步检测
+            if ! iconv -f UTF-8 -t UTF-8 "$file" 2>/dev/null >/dev/null; then
+                encoding="gbk"
+                needs_conversion=true
+                changes+=("编码: → UTF-8")
+            fi
+        fi
+        
+        # 执行转换
+        if [ "$needs_conversion" = true ]; then
+            local temp_file="${file}.tmp"
+            local success=true
+            
+            # 先转换编码（如果需要）
+            if [ -n "$encoding" ]; then
+                if iconv -f "$encoding" -t UTF-8 "$file" 2>/dev/null > "$temp_file"; then
+                    mv "$temp_file" "$file"
+                elif iconv -f GB18030 -t UTF-8 "$file" 2>/dev/null > "$temp_file"; then
+                    mv "$temp_file" "$file"
+                elif iconv -f GB2312 -t UTF-8 "$file" 2>/dev/null > "$temp_file"; then
+                    mv "$temp_file" "$file"
+                elif iconv -f CP936 -t UTF-8 "$file" 2>/dev/null > "$temp_file"; then
+                    mv "$temp_file" "$file"
+                else
+                    success=false
+                    ((failed_count++))
+                    echo "   ❌ 编码转换失败"
+                fi
+            fi
+            
+            # 转换行尾
+            if [ "$success" = true ]; then
+                sed -i 's/\r$//' "$file"
+                ((converted_count++))
+                echo "   ✅ ${changes[*]}"
+            fi
+        else
+            ((skipped_count++))
+            echo "   ✓ 已经是Unix格式，无需转换"
+        fi
+        
+        echo "   ---"
+        
+    done < <(eval "$find_cmd")
+    
+    echo "=========================================="
+    echo "📊 转换统计:"
+    echo "   ✅ 已转换: $converted_count 个文件"
+    echo "   ⏭️  已跳过: $skipped_count 个文件"
+    [ $failed_count -gt 0 ] && echo "   ❌ 失败: $failed_count 个文件"
+    echo "=========================================="
+    
+    if [ $converted_count -eq 0 ] && [ $failed_count -eq 0 ]; then
+        echo "✨ 所有文件已经是Unix格式！"
+    fi
+    
+}
+
+
+
