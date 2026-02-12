@@ -275,7 +275,49 @@ listpath() {
     fi
 }
 
-#!/bin/bash
+findw() {
+    local exclude_paths=("$@")
+    local exclude_conditions=""
+    local found_count=0
+    local show_details=${FINDW_DETAILS:-false}  # 环境变量控制是否显示file详情
+    
+    echo "🔍 正在扫描Windows格式文件（CRLF结尾）..."
+    
+    # 构建排除条件
+    if [ ${#exclude_paths[@]} -gt 0 ]; then
+        echo "📁 排除路径: ${exclude_paths[*]}"
+        for path in "${exclude_paths[@]}"; do
+            clean_path=$(echo "$path" | sed -E 's|^\./||; s|/*$||')
+            [ -z "$clean_path" ] && continue
+            exclude_conditions="$exclude_conditions \
+                -not -path \"./$clean_path\" \
+                -not -path \"./$clean_path/*\" \
+                -not -path \"*/$clean_path\" \
+                -not -path \"*/$clean_path/*\""
+        done
+    fi
+    
+    echo "=========================================="
+    
+    # 执行查找
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        echo "📄 发现: $file"
+        if [ "$show_details" = true ]; then
+            file "$file" | sed 's/^/   /'
+        fi
+        ((found_count++))
+    done < <(eval "find . -type f $exclude_conditions -exec grep -I -l $'\r$' {} \; 2>/dev/null")
+    
+    echo "=========================================="
+    if [ $found_count -eq 0 ]; then
+        echo "✅ 未发现Windows格式文件"
+    else
+        echo "⚠️  发现 $found_count 个Windows格式文件"
+    fi
+    
+}
+
 
 # ===========================================
 # fixwin - 查找并转换Windows格式文件为Unix格式
@@ -404,6 +446,4 @@ fixwin() {
     fi
     
 }
-
-
 
