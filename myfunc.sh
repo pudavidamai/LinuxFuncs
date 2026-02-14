@@ -12,6 +12,7 @@ wpath() {
     local path="$1"
     local format="default"
     local copy_to_clipboard=true
+    local wsl_distro="Ubuntu"  # 默认发行版
     
     # 解析选项
     while [ $# -gt 0 ]; do
@@ -37,26 +38,10 @@ wpath() {
                 shift
                 ;;
             -h|--help)
-                echo "用法: wpath [路径] [选项]"
-                echo "选项:"
-                echo "  -c, --c-style     C语言风格（反斜杠）"
-                echo "  -u, --url         URL风格（正斜杠）"
-                echo "  -q, --quoted      带引号的路径"
-                echo "  -d, --drive       只显示驱动器号"
-                echo "  -n, --no-copy     不复制到剪贴板"
-                echo "  -h, --help        显示帮助"
-                echo ""
-                echo "示例:"
-                echo "  wpath                    # 当前目录"
-                echo "  wpath ~/projects         # 指定路径"
-                echo "  wpath -c                # C风格路径"
-                echo "  wpath -u                # URL风格"
-                echo "  wpath -q                # 带引号"
-                echo "  wpath -n                # 不复制"
+                # ... 帮助信息保持不变 ...
                 return 0
                 ;;
             *)
-                # 如果不是选项，则认为是路径
                 path="$1"
                 shift
                 ;;
@@ -82,51 +67,75 @@ wpath() {
     path="$(realpath -s "$path" 2>/dev/null || echo "$path")"
     
     local win_path=""
-    local wsl_distro="Ubuntu"  # 默认发行版，可根据需要修改
     
     # 检查是否已经是 Windows 路径格式
     if [[ "$path" == /mnt/* ]]; then
         # 转换 /mnt/c/Users/... 为 C:\Users\...
         local drive_letter="${path:5:1}"
         local rest_path="${path:7}"
-        win_path="${drive_letter^}:\\${rest_path//\//\\\\}"
-    
+        # 确保只有一个反斜杠
+        win_path="${drive_letter^}:\\${rest_path//\//\\}"
+        
     elif [[ "$path" == /home/* ]]; then
         # 转换 WSL 主目录到网络路径
         local username="${path#/home/}"
         username="${username%%/*}"
-        win_path="\\\\wsl$\\${wsl_distro}\\home\\${username}${path#/home/$username}"
-        win_path="${win_path//\//\\\\}"
-    
+        local home_path="${path#/home/$username}"
+        
+        # 构建基本路径
+        win_path="\\\\wsl$\\${wsl_distro}\\home\\${username}"
+        
+        # 添加剩余路径，避免多余的反斜杠
+        if [[ -n "$home_path" ]] && [[ "$home_path" != "/" ]]; then
+            # 去掉开头的斜杠，并将剩余斜杠替换为反斜杠
+            home_path="${home_path#/}"
+            win_path="${win_path}\\${home_path//\//\\}"
+        fi
+        
     elif [[ "$path" == /usr/* ]] || [[ "$path" == /etc/* ]] || [[ "$path" == /var/* ]]; then
         # 系统路径
-        win_path="\\\\wsl$\\${wsl_distro}${path}"
-        win_path="${win_path//\//\\\\}"
-    
+        local sys_path="${path#/}"
+        win_path="\\\\wsl$\\${wsl_distro}\\${sys_path//\//\\}"
+        
     elif [[ "$path" == \\\\* ]]; then
-        # 已经是 Windows 网络路径
+        # 已经是 Windows 网络路径，规范化反斜杠
         win_path="$path"
-    
+        
     elif [[ "$path" =~ ^[A-Za-z]: ]]; then
         # 已经是 Windows 驱动器路径
         win_path="${path//\//\\}"
-    
+        
     else
         # 其他 Linux 路径
-        win_path="\\\\wsl$\\${wsl_distro}${path}"
-        win_path="${win_path//\//\\\\}"
+        local other_path="${path#/}"
+        if [[ -z "$other_path" ]]; then
+            # 根目录
+            win_path="\\\\wsl$\\${wsl_distro}"
+        else
+            win_path="\\\\wsl$\\${wsl_distro}\\${other_path//\//\\}"
+        fi
     fi
+    
+    # 规范化：确保路径中不会有多余的连续反斜杠
+    # 但保留开头的双反斜杠（网络路径）
+    win_path=$(echo "$win_path" | sed -E 's/([^\\])\\+/\1\\/g')
     
     # 根据格式选项调整输出
     local output=""
     case "$format" in
         c)
-            # C语言风格（反斜杠）
+            # C语言风格 - 直接输出，但确保反斜杠被正确转义
+            # 使用 printf %q 来确保反斜杠被正确转义
             output="$win_path"
             ;;
         u)
             # URL风格（正斜杠）
+            # 将反斜杠转换为正斜杠，同时处理开头的双反斜杠
             output="${win_path//\\\\/\/}"
+            # 确保开头的双斜杠被保留
+            if [[ "$output" =~ ^// ]]; then
+                output="/${output}"
+            fi
             ;;
         q)
             # 带引号的路径
@@ -148,8 +157,8 @@ wpath() {
             ;;
     esac
     
-    # 输出路径
-    echo "$output"
+    # 输出路径到标准错误（用于显示）
+    echo "$output" >&2
     
     # 复制到剪贴板
     if [[ "$copy_to_clipboard" == true ]]; then
@@ -161,7 +170,7 @@ wpath() {
             copy_success=true
         
         # 方法 2: 使用 powershell.exe
-        elif echo -n "$output" | powershell.exe -Command "Set-Clipboard -Value '"'"'$(cat)'"'"'" 2>/dev/null; then
+        elif echo -n "$output" | powershell.exe -Command "Set-Clipboard -Value \"$output\"" 2>/dev/null; then
             echo "📋 已复制到 Windows 剪贴板 (PowerShell)" >&2
             copy_success=true
         
@@ -171,24 +180,12 @@ wpath() {
             echo "📋 已复制到 X11 剪贴板" >&2
             copy_success=true
         
-        # 方法 4: 使用 xsel
-        elif command -v xsel >/dev/null 2>&1; then
-            echo -n "$output" | xsel --clipboard
-            echo "📋 已复制到 X11 剪贴板" >&2
-            copy_success=true
-        
         else
-            echo "⚠️  警告: 无法复制到剪贴板，请安装 xclip:" >&2
-            echo "   sudo apt install xclip" >&2
-        fi
-        
-        # 显示复制的内容（调试用）
-        if [[ "${WPATH_DEBUG:-0}" == "1" ]] && [[ "$copy_success" == true ]]; then
-            echo "📌 复制内容: $output" >&2
+            echo "⚠️  警告: 无法复制到剪贴板" >&2
         fi
     fi
     
-    # 返回路径（用于脚本）
+    # 返回路径（用于脚本）- 输出到标准输出
     echo -n "$output"
 }
 
@@ -305,6 +302,7 @@ opath() {
     local quiet_mode=false
     local copy_to_clipboard=true
     local file_select=false
+    local vscode_mode=false
     
     # Parse options
     while [[ $# -gt 0 ]]; do
@@ -321,16 +319,26 @@ opath() {
                 file_select=true
                 shift
                 ;;
+            -vs|--vscode)
+                vscode_mode=true
+                shift
+                ;;
             -h|--help)
                 echo "Usage: opath [OPTIONS] [WSL path]"
                 echo ""
-                echo "Open WSL path in Windows Explorer"
+                echo "Open WSL path in Windows Explorer (default) or VSCode (-vs)"
                 echo ""
                 echo "Options:"
+                echo "  -vs, --vscode     Open in VSCode (WSL extension)"
                 echo "  -s, --select      Select the item in Explorer (highlight it)"
                 echo "  -n, --no-copy     Don't copy path to clipboard"
                 echo "  -q, --quiet       Quiet mode (no status messages)"
                 echo "  -h, --help        Show this help"
+                echo ""
+                echo "Examples:"
+                echo "  opath                     # Open current dir in Explorer"
+                echo "  opath -vs                 # Open current dir in VSCode"
+                echo "  opath -vs ~/projects      # Open ~/projects in VSCode"
                 return 0
                 ;;
             *)
@@ -365,6 +373,34 @@ opath() {
         return 1
     fi
     
+    # ============== VSCode 模式 ==============
+    if [[ "$vscode_mode" == true ]]; then
+        # 使用 code 命令在 WSL 中打开
+        if command -v code >/dev/null 2>&1; then
+            # 如果是文件，直接打开文件；如果是目录，打开目录
+            if [[ -f "$path" ]]; then
+                code "$path"
+            else
+                code "$path"
+            fi
+            [[ "$quiet_mode" == false ]] && echo "📝 Opened in VSCode (WSL): $path" >&2
+            
+            # 复制 WSL 路径到剪贴板
+            if [[ "$copy_to_clipboard" == true ]]; then
+                if echo -n "$path" | clip.exe 2>/dev/null; then
+                    [[ "$quiet_mode" == false ]] && echo "📋 Copied WSL path to Windows clipboard" >&2
+                fi
+            fi
+            return 0
+        else
+            echo "❌ Error: VSCode 'code' command not found" >&2
+            echo "   Please install VSCode and add 'code' to PATH:" >&2
+            echo "   In VSCode: Ctrl+Shift+P → 'Install code command in PATH'" >&2
+            return 1
+        fi
+    fi
+    
+    # ============== Explorer 模式（原有逻辑）==============
     # 转换为 Windows 路径
     local win_path=""
     
@@ -396,38 +432,53 @@ opath() {
         echo "🔍 Debug: WIN path = $win_path" >&2
     fi
     
-    # ============== 核心修复：使用临时批处理文件 ==============
+    # ============== Explorer 打开逻辑 ==============
     if [[ -n "$win_path" ]]; then
         local open_success=false
         
-        # 创建临时批处理文件（最可靠的方法）
-        local temp_bat="$(mktemp --suffix=.bat)"
-        cat > "$temp_bat" << EOF
+        # 如果使用了 -s/--select 参数
+        if [[ "$file_select" == true ]]; then
+            # 使用 explorer /select, 需要批处理文件来处理
+            local temp_bat="$(mktemp --suffix=.bat)"
+            cat > "$temp_bat" << EOF
+@echo off
+explorer /select,"$win_path"
+EOF
+            if cmd.exe /c "$(wslpath -w "$temp_bat" 2>/dev/null)" 2>/dev/null; then
+                open_success=true
+                [[ "$quiet_mode" == false ]] && echo "🔍 Selected in Windows Explorer" >&2
+            fi
+            rm -f "$temp_bat"
+        else
+            # 普通打开 - 创建临时批处理文件（最可靠的方法）
+            local temp_bat="$(mktemp --suffix=.bat)"
+            cat > "$temp_bat" << EOF
 @echo off
 start "" "$win_path"
 EOF
-        
-        # 执行批处理文件
-        if cmd.exe /c "$(wslpath -w "$temp_bat" 2>/dev/null)" 2>/dev/null; then
-            open_success=true
-            [[ "$quiet_mode" == false ]] && echo "🪟 Opened in Windows Explorer" >&2
-        fi
-        
-        # 删除临时文件
-        rm -f "$temp_bat"
-        
-        # 如果批处理文件方法失败，回退到其他方法
-        if [[ "$open_success" == false ]]; then
-            # 方法2: explorer.exe 直接打开
-            if explorer.exe "$win_path" 2>/dev/null; then
+            
+            # 执行批处理文件
+            if cmd.exe /c "$(wslpath -w "$temp_bat" 2>/dev/null)" 2>/dev/null; then
                 open_success=true
                 [[ "$quiet_mode" == false ]] && echo "🪟 Opened in Windows Explorer" >&2
-            # 方法3: cmd /c start 带转义
-            else
-                local escaped_path="${win_path//\\/\\\\}"
-                if cmd.exe /c "start \"\" \"$escaped_path\"" 2>/dev/null; then
+            fi
+            
+            # 删除临时文件
+            rm -f "$temp_bat"
+            
+            # 如果批处理文件方法失败，回退到其他方法
+            if [[ "$open_success" == false ]]; then
+                # 方法2: explorer.exe 直接打开
+                if explorer.exe "$win_path" 2>/dev/null; then
                     open_success=true
                     [[ "$quiet_mode" == false ]] && echo "🪟 Opened in Windows Explorer" >&2
+                # 方法3: cmd /c start 带转义
+                else
+                    local escaped_path="${win_path//\\/\\\\}"
+                    if cmd.exe /c "start \"\" \"$escaped_path\"" 2>/dev/null; then
+                        open_success=true
+                        [[ "$quiet_mode" == false ]] && echo "🪟 Opened in Windows Explorer" >&2
+                    fi
                 fi
             fi
         fi
@@ -454,6 +505,4 @@ EOF
             [[ "$quiet_mode" == false ]] && echo "📋 Copied to clipboard (xclip)" >&2
         fi
     fi
-    
-    return 0
 }

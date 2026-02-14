@@ -10,25 +10,146 @@ ff() {
     echo "🔍 Scanning .sh files in: $dir"
     echo "=================================="
     
+    # 创建临时文件来存储结果
+    local tmp_prefix=$(mktemp)
+    local files_list=()
+    local -A func_counts
+    
     # 查找所有 .sh 文件并提取函数名
-    find "$dir" -type f -name "*.sh" -print0 | while IFS= read -r -d '' file; do
+    while IFS= read -r -d '' file; do
         # 获取相对路径
         rel_path="${file#$dir/}"
         
         # 提取函数名（匹配 function name() 或 name() 格式）
-        functions=$(grep -E '^\s*(function\s+)?[a-zA-Z_][a-zA-Z0-9_]*\s*\(\s*\)\s*\{?' "$file" | \
-                   sed -E 's/^\s*(function\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{?.*$/\2/')
+        grep -E '^\s*(function\s+)?[a-zA-Z_][a-zA-Z0-9_]*\s*\(\s*\)\s*\{?' "$file" | \
+        sed -E 's/^\s*(function\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{?.*$/\2/' > "$tmp_prefix.$rel_path"
         
-        # 如果有函数，输出
-        if [[ -n "$functions" ]]; then
-            echo "📁 $rel_path"
-            echo "$functions" | while IFS= read -r func; do
-                echo "  └─ $func"
-            done
-            echo ""
+        # 检查是否有函数
+        if [[ -s "$tmp_prefix.$rel_path" ]]; then
+            files_list+=("$rel_path")
+            func_counts["$rel_path"]=$(wc -l < "$tmp_prefix.$rel_path")
+        else
+            rm -f "$tmp_prefix.$rel_path"
+        fi
+    done < <(find "$dir" -type f -name "*.sh" -print0)
+    
+    # 检查是否有结果
+    if [[ ${#files_list[@]} -eq 0 ]]; then
+        echo "No functions found in .sh files" >&2
+        rm -f "$tmp_prefix"*
+        return 0
+    fi
+    
+    # 排序文件列表
+    mapfile -t files_list < <(printf '%s\n' "${files_list[@]}" | sort)
+    
+    # 获取终端宽度
+    local term_width=$(tput cols 2>/dev/null || echo 80)
+    local file_count=${#files_list[@]}
+    
+    # 确定列数（最多4列，根据文件数调整）
+    local cols=4
+    [[ $file_count -lt $cols ]] && cols=$file_count
+    
+    # 计算每列宽度
+    local col_width=$(( (term_width - 30) / cols ))  # 减去一些边距
+    [[ $col_width -lt 20 ]] && col_width=20
+    
+    # 找出每个文件中的最大函数数
+    local max_funcs=0
+    for file in "${files_list[@]}"; do
+        local count=${func_counts["$file"]}
+        [[ $count -gt $max_funcs ]] && max_funcs=$count
+    done
+    
+    # 显示表头
+    echo ""
+    echo "📊 Functions grouped by file:"
+    echo ""
+    
+    # 准备显示数据
+    local -A file_displays
+    local -A func_lists
+    
+    # 为每个文件准备显示内容
+    for file in "${files_list[@]}"; do
+        # 准备文件名显示
+        local display_name="${file%.sh}"  # 去掉 .sh 后缀
+        display_name="${display_name##*/}"  # 只取文件名
+        
+        # 读取函数列表
+        mapfile -t funcs < "$tmp_prefix.$file"
+        func_lists["$file"]="${funcs[*]}"  # 保存函数列表
+        
+        # 保存显示用的文件名
+        if [[ ${#display_name} -gt $((col_width - 2)) ]]; then
+            file_displays["$file"]="${display_name:0:$((col_width-5))}..."
+        else
+            file_displays["$file"]="$display_name"
         fi
     done
+    
+    # 按列显示文件名
+    for ((i=0; i<file_count; i+=cols)); do
+        # 计算当前行的列数
+        local current_cols=$((file_count - i))
+        [[ $current_cols -gt $cols ]] && current_cols=$cols
+        
+        # 显示文件名行
+        for ((j=0; j<current_cols; j++)); do
+            local idx=$((i + j))
+            local file="${files_list[$idx]}"
+            printf "%-${col_width}s" "${file_displays[$file]}"
+        done
+        echo ""
+        
+        # 显示分隔线
+        for ((j=0; j<current_cols; j++)); do
+            printf "%-${col_width}s" "$(printf '%*s' $col_width | tr ' ' '─')"
+        done
+        echo ""
+        
+        # 显示函数名，直到所有文件的行都显示完
+        local row=0
+        local has_more=true
+        
+        while [[ "$has_more" == true ]]; do
+            has_more=false
+            
+            for ((j=0; j<current_cols; j++)); do
+                local idx=$((i + j))
+                local file="${files_list[$idx]}"
+                
+                # 读取对应行的函数
+                local func=$(sed -n "$((row+1))p" "$tmp_prefix.$file" 2>/dev/null)
+                
+                if [[ -n "$func" ]]; then
+                    has_more=true
+                    # 截断过长的函数名
+                    if [[ ${#func} -gt $col_width ]]; then
+                        func="${func:0:$((col_width-3))}..."
+                    fi
+                    printf "%-${col_width}s" "$func"
+                else
+                    # 如果没有更多函数，显示空行
+                    printf "%-${col_width}s" ""
+                fi
+            done
+            echo ""
+            ((row++))
+        done
+        
+        # 文件组之间的空行
+        echo ""
+    done
+    
+    # 清理临时文件
+    rm -f "$tmp_prefix"*
+    
+    echo "=================================="
+    echo "✅ Done - Found functions in ${file_count} files"
 }
+
 
 # ============================================
 # Path Management Functions

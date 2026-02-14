@@ -411,4 +411,30 @@ vb() {
     esac
 }
 
+gitlab_()
+{
+git config --global user.email "ping.wu@bsci.com"
+git config --global user.name "Ping Wu"
+git config --global user.email
+git config --global user.name
+
+}
+
+github_()
+{
+   git config --global user.email "pudavidamai@gmail.com"
+git config --global user.name "Pudavidamai"
+git config --global user.email
+git config --global user.name
+ 
+}
+
+devops_()
+{
+git config --global user.email "Ping@adminbscdv.onmicrosoft.com"
+git config --global user.name "Ping Wu"
+git config --global user.email
+git config --global user.name
+
+}
 
