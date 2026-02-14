@@ -1,5 +1,6 @@
 pushprofile()
 {
+   github_
    cd ~/mylib
    git add .
    git commit -m "add more funtions"
